@@ -11,7 +11,7 @@ import ssl
 from typing import Optional, List, Dict, Literal, Any
 
 from email.mime.text import MIMEText
-from bs4 import BeautifulSoup
+from html_to_markdown import convert_to_markdown
 
 from fastapi import Body
 from pydantic import Field
@@ -33,36 +33,21 @@ GMAIL_REQUEST_DELAY = 0.1
 HTML_BODY_TRUNCATE_LIMIT = 20000
 
 
-def _html_to_text(html: str) -> str:
+def _html_to_markdown(html: str) -> str:
     """
-    Convierte HTML a texto legible.
+    Convert HTML to Markdown, preserving links and structure.
 
     Args:
-        html: Contenido HTML
+        html: HTML content
 
     Returns:
-        Texto plano legible
+        Markdown formatted text with links preserved
     """
     try:
-        # Parse HTML con BeautifulSoup
-        soup = BeautifulSoup(html, 'html.parser')
-
-        # Remover scripts y estilos
-        for script in soup(["script", "style"]):
-            script.decompose()
-
-        # Obtener texto
-        text = soup.get_text()
-
-        # Limpiar espacios en blanco excesivos
-        lines = (line.strip() for line in text.splitlines())
-        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        text = '\n'.join(chunk for chunk in chunks if chunk)
-
-        return text
+        return convert_to_markdown(html)
     except Exception as e:
-        logger.warning(f"Failed to convert HTML to text: {e}")
-        return html  # Fallback al HTML crudo
+        logger.warning(f"Failed to convert HTML to markdown: {e}")
+        return html  # Fallback to raw HTML
 
 
 def _extract_message_body(payload):
@@ -135,40 +120,27 @@ def _extract_message_bodies(payload):
 
 def _format_body_content(text_body: str, html_body: str) -> str:
     """
-    Helper function to format message body content with HTML fallback and truncation.
+    Format message body content, preferring HTML converted to Markdown.
 
-    Detects when text/plain is a useless fallback by checking for HTML comments.
-    Plain text should never contain HTML comments (<!--), so their presence
-    indicates the text is a fallback message, not actual content.
+    Prefers HTML body (converted to Markdown) to preserve links and formatting.
+    Falls back to plain text only if HTML is not available.
 
     Args:
         text_body: Plain text body content
         html_body: HTML body content
 
     Returns:
-        Formatted body content string
+        Formatted body content string (Markdown if from HTML, plain text otherwise)
     """
-    # Detect HTML comments in plain text (indicates fallback)
-    has_html_comment = "<!--" in text_body
-
-    # Use HTML if:
-    # 1. Text is empty
-    # 2. Text contains HTML comments (fallback indicator)
-    # 3. HTML is significantly longer (50x+) than text
-    use_html = (
-        not text_body.strip() or
-        has_html_comment or
-        (html_body.strip() and len(html_body) > len(text_body) * 50)
-    )
-
-    if use_html and html_body.strip():
-        # Convert HTML to readable text
-        text_from_html = _html_to_text(html_body)
+    if html_body.strip():
+        # Prefer HTML, convert to Markdown to preserve links
+        markdown_content = _html_to_markdown(html_body)
         # Truncate very large content to keep responses manageable
-        if len(text_from_html) > HTML_BODY_TRUNCATE_LIMIT:
-            text_from_html = text_from_html[:HTML_BODY_TRUNCATE_LIMIT] + "\n\n[Content truncated...]"
-        return text_from_html
+        if len(markdown_content) > HTML_BODY_TRUNCATE_LIMIT:
+            markdown_content = markdown_content[:HTML_BODY_TRUNCATE_LIMIT] + "\n\n[Content truncated...]"
+        return markdown_content
     elif text_body.strip():
+        # Fall back to plain text if no HTML available
         return text_body
     else:
         return "[No readable content found]"
